@@ -25,7 +25,7 @@ class PyramidPoolingModule(nn.Module):
                 nn.Conv2d(in_channel,out_channel,kernel_size = 1, bias = False),
                 nn.BatchNorm2d(out_channel),
                 nn.ReLU(inplace = True)
-            )
+            ).cuda()
             self.featureMaps.append(seq)
             
     def forward(self,x):
@@ -35,9 +35,10 @@ class PyramidPoolingModule(nn.Module):
         for feature in self.featureMaps:
             # 2D Upsampling (resizing) different scales, bilinear for 2D
             # if mode = linear(3D) or bilinear(2D), align_corners = true, else false
-            upsampling = F.interpolate(feature(x), upsampling_size, mode='bilinear', align_corners=True)
+            upsampling = F.interpolate(feature(x), upsampling_size, mode='bilinear', align_corners=True).cuda()
             upsamplings.append(upsampling)
-        return torch.cat(upsamplings, 1) # concat feature map and scaled features together
+        concat_ = torch.cat(upsamplings, 1).cuda() # concat feature map and scaled features together
+        return concat_
 
 
 class PSPNet(nn.Module):
@@ -75,8 +76,9 @@ class PSPNet(nn.Module):
         )
     def forward(self, x):
         shape = x.size()
+        x = x.cuda()
         out = self.feature_Map(x)
         out = self.PPM(out[0])
-        out = self.output(out)
-        out = F.interpolate(out,shape[2:], mode = 'bilinear', align_corners = True )
+        out = self.output(out).cuda()
+        out = F.interpolate(out,shape[2:], mode = 'bilinear', align_corners = True ).cuda()
         return out  

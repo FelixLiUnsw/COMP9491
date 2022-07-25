@@ -1,6 +1,5 @@
 import os
 import os.path
-import cv2
 from collections import OrderedDict
 import math
 from tqdm import tqdm
@@ -16,6 +15,7 @@ from torch.utils.data import DataLoader, Dataset
 import albumentations as A
 from glob import glob
 import numpy as np
+import random
 print(torch.cuda.is_available())
 print(torch.__version__)
 
@@ -23,14 +23,8 @@ from resnet import resnet18, resnet34, resnet50, resnet101, resnet152
 from PSPnet import PSPNet
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-batch_size = 16
-start_lr = 0.01
-trans = transforms.Compose(
-                    [
-                    transforms.Resize([224,224]),
-                    transforms.ToTensor(),
-                    ]
-            )
+batch_size_setting = 32
+start_lr = 0.001
 class SegmentationDataset(Dataset):
     def __init__(self, root_folder_path, split) -> None:
         super().__init__()
@@ -41,51 +35,54 @@ class SegmentationDataset(Dataset):
         self.anno_list = sorted(glob(os.path.join(root_folder_path,"annotations", split, "*.png")))
     def __len__(self):
         return len(self.img_list)
-        # if self.split == '/training':
-        #     return len(self.img_list)
-        # else:
-        #     return len(self.anno_list)
 
     def __getitem__(self,idx):
         img = Image.open(self.img_list[idx])
+        img = img.convert('RGB')
         anno = Image.open(self.anno_list[idx])
+        trans_label = transforms.Compose([
+                          transforms.Resize([224,224]),
+                          ])
+
+        img = trans_label(img)
+        anno = trans_label(anno)
+        if random.random() > 0.5:
+          trans_flip = transforms.RandomHorizontalFlip(p=1)
+          img = trans_flip(img)
+          anno = trans_label(anno)
+
+        #anno = trans_label(anno)
+        anno = torch.from_numpy(np.array(anno).astype('int64')-1)  # tensor([224,224])
         trans = transforms.Compose(
                             [
-                            transforms.Resize([224,224]),
                             transforms.ToTensor(),
                             ]
                     )
         img = trans(img)
-        anno = trans(anno)
         return img, anno
 
 ## DataSet
-train_dataset = SegmentationDataset('ADEChallengeData2016',split = 'training')
-#val_dataset = SegmentationDataset('ADEChallengeData2016',split = 'validation')
-data_loader = DataLoader(train_dataset, batch_size= 16,shuffle=False)
-#val_dataset = DataLoader(val_dataset, batch_size= 16,shuffle=False)
+train_dataset = SegmentationDataset('/content/dataset/ADEChallengeData2016',split = 'training')
+val_dataset = SegmentationDataset('/content/dataset/ADEChallengeData2016',split = 'validation')
+data_loader = DataLoader(train_dataset, batch_size= batch_size_setting,shuffle=False)
+val_dataset = DataLoader(val_dataset, batch_size= batch_size_setting,shuffle=False)
 net = PSPNet(50,(1,2,3,6),dropout = 0.1, classes = 150).to(device)
-net.cuda()
+#net.load_state_dict(torch.load('epoch.pth'))
 optimizer = torch.optim.Adam(net.parameters(),lr = start_lr)
-scheduler =  torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
-criterion = nn.CrossEntropyLoss()
+scheduler =  torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98)
+criterion = nn.CrossEntropyLoss(ignore_index = -1).cuda()
 print("Start Traning...")
-for epoch in range(1, 3):
+def get_lr(optimizer):
+    for param_group in optimizer.param_groups:
+        return param_group['lr']
+for epoch in range(1, 700):
     total_loss = 0
-    print("---------Epoch {}-----------",epoch)
+    print("---------Epoch {}-----------".format(epoch))
     for batch in tqdm(data_loader):
-        images, labels = batch
-
-        preds = net(images.cuda())
-
-        #labels = labels.astype(np.int64)
-        #labels = F.one_hot(labels.to(torch.int64), 151)
-        labels = torch.argmax(labels, dim=1)
-        # print(preds.shape)
-        # print(labels.shape)
-
+        images, labels = batch  # labels -->
+        images, labels = images.cuda(), labels.cuda()
+        preds = net(images)   #.cuda()
         loss = criterion(preds,labels)
-        # back prop
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -93,4 +90,6 @@ for epoch in range(1, 3):
         total_loss += loss.item()
     if scheduler is not None:
         scheduler.step()
-    print(total_loss)
+    lr_ = get_lr(optimizer)
+    print("total loss {} -----> learning rate {}".format(total_loss,lr_))
+    torch.save(net.state_dict(), './epoch.pth')
