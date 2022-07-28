@@ -7,7 +7,7 @@ from dataset import TestDataset
 from segmodule import SegmentationModule
 from mit_semseg.lib.nn import async_copy_to
 from mit_semseg.lib.utils import as_numpy
-from mit_semseg.utils import colorEncode
+from mit_semseg.utils import colorEncode, intersectionAndUnion, AverageMeter
 import numpy as np
 from scipy.io import loadmat
 import csv
@@ -26,9 +26,29 @@ with open('./object150_info.csv') as f:
     for row in reader:
         names[int(row[0])] = row[5].split(";")[0]
 
+SMOOTH = 1e-6
 
-def visualize_result(data, pred):
+acc_meter = AverageMeter()
+intersection_meter = AverageMeter()
+union_meter = AverageMeter()
+
+def iou_pytorch(outputs, labels):
+    #outputs = outputs.squeeze(1)
+
+    intersection = (outputs & labels).sum((0, 1))
+    union = (outputs | labels).sum((0, 1))
+
+    iou = (intersection + SMOOTH) / (union + SMOOTH)
+
+    return iou
+
+
+def visualize_result(data, pred, show=False):
+
+
+
     (img, info) = data
+    img_name = info[0].split('\\')[-1]
 
     # print predictions in descending order
     pred = np.int32(pred)
@@ -44,24 +64,24 @@ def visualize_result(data, pred):
     # colorize prediction
     pred_color = colorEncode(pred, colors).astype(np.uint8)
 
-    img_test = cv2.imread('./ADEChallengeData2016/annotations/validation/ADE_val_00000001.png', cv2.IMREAD_GRAYSCALE)
+    img_test = cv2.imread('./ADEChallengeData2016/annotations/validation/' + img_name.replace('.jpg', '.png'), cv2.IMREAD_GRAYSCALE)
     img_test = np.array(torch.from_numpy(np.array(img_test)).long() - 1)
 
-    acc, pix = accuracy(img_test, pred)
+    acc, pix = accuracy(pred, img_test)
+    #iou = iou_pytorch(pred, img_test)
 
-    print(acc)
+    intersection, union = intersectionAndUnion(pred, img_test, 150)
+    acc_meter.update(acc, pix)
+    intersection_meter.update(intersection)
+    union_meter.update(union)
 
 
-    #print(img.shape, pred_color.shape)
     # aggregate images and save
-    im_vis = np.concatenate((img, pred_color), axis=1)
+    if show:
+        im_vis = np.concatenate((img, pred_color), axis=1)
 
-
-    img_name = info[0].split('\\')[-1]
-    Image.fromarray(im_vis).save(
-        os.path.join('./result/', img_name.replace('.jpg', '.png')))
-
-
+        Image.fromarray(im_vis).save(
+            os.path.join('./result/', img_name.replace('.jpg', '.png')))
 
 
 
@@ -100,6 +120,13 @@ loader_test = torch.utils.data.DataLoader(
 seg_module.eval()
 torch.cuda.set_device(0)
 
+acc = 0.0
+acc_crf = 0.0
+iou = 0.0
+iou_crf = 0.0
+
+i = 0
+
 for batch_data in loader_test:
     #batch_data = batch_data[0]
     batch_data['img_ori'] = batch_data['img_ori'].reshape(batch_data['img_ori'].shape[1:])
@@ -131,8 +158,6 @@ for batch_data in loader_test:
         crf = DenseCRF(5, 3, 1, 4, 67, 3)
 
         imgg = np.array(batch_data['img_ori'])
-        #imgg = np.transpose(imgg, (2, 0, 1))
-
 
         scc = np.array(scores.squeeze(0).cpu())
 
@@ -144,9 +169,24 @@ for batch_data in loader_test:
     # visualization
     visualize_result(
         (batch_data['img_ori'], batch_data['info']),
-        pred
-    )
-    visualize_result(
-        (batch_data['img_ori'], batch_data['info']),
         label
     )
+
+    #acc += single_acc
+    #iou += single_iou
+    '''
+    acc_crf += visualize_result(
+                (batch_data['img_ori'], batch_data['info']),
+                label
+            )
+    '''
+    i += 1
+
+
+iou = (intersection_meter.sum + 1e-10) / (union_meter.sum + 1e-10)
+for i, _iou in enumerate(iou):
+    print('class [{}], IoU: {:.4f}'.format(i, _iou))
+
+print('[Eval Summary]:')
+print('Mean IoU: {:.4f}, Accuracy: {:.2f}%'
+      .format(iou.mean(), acc_meter.average()*100))
