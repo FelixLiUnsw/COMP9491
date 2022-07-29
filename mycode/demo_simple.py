@@ -73,7 +73,7 @@ def test_single_img():
 
 
 def test_multi_imgs(test_data):
-    # ############################ 设置各种参数 ############################
+    # ############################ Parmas Setting ############################
     mean, std, colors = prepare_eval_tool()
     model, classes = prepare_model()
     scales = [1.0]
